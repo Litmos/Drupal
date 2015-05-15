@@ -1,0 +1,7 @@
+name = Litmos by CallidusCloud
+description = Import Litmos courses and allow single sign-on
+core = 7.x
+
+dependencies[] = views
+dependencies[] = features
+//dependencies[] = litmos_feature

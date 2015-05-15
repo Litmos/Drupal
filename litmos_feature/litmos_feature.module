@@ -1,0 +1,7 @@
+<?php
+/**
+ * @file
+ * Code for the Litmos Feature feature.
+ */
+
+include_once 'litmos_feature.features.inc';

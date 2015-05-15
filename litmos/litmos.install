@@ -1,0 +1,27 @@
+<?php
+function litmos_schema() {
+    $schema['litmos_user'] = array(
+        'description' => t('Map drupal users to litmos users'),
+        'fields' => array(
+            'uid' => array(
+                'description' => t('The uid in Drupal'),
+                'type' => 'int',
+                'unsigned' => TRUE,
+                'not null' => TRUE),
+            'litmos_email' => array(
+                'description' => t('The user email'),
+                'type' => 'varchar',
+                'length' => 255,
+                'not null' => TRUE,
+                'default' => ''),
+        ),
+        'indexes' => array(),
+        'unique keys' => array(
+            'litmos_email' => array('litmos_email'),
+        ),
+        'primary key' => array('uid'),
+    );
+    return $schema;
+}
+
+?>

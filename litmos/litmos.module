@@ -1,0 +1,213 @@
+<?php
+
+define('LITMOS_BASE_URI','https://api.litmos.com/v1.svc');
+
+function litmos_menu() {
+    $items['admin/config/litmos'] = array(
+        'title' => 'Litmos',
+        'description' => 'Litmos configuration and settings',
+        'page callback' => 'system_admin_menu_block_page',
+        'access arguments' => array('access administration pages'),
+        'file' => 'system.admin.inc',
+        'file path' => drupal_get_path('module', 'system')
+    );
+    $items['admin/config/litmos/settings'] = array(
+        'title' => 'Litmos Settings',
+        'description' => 'Configure litmos for administrators and users',
+        'page callback' => 'drupal_get_form',
+        'page arguments' => array('litmos_admin_form'),
+        'access arguments' => array('administer site configuration'),
+        'type' => MENU_NORMAL_ITEM
+    );
+    $items['litmos/sso'] = array(
+        'title' => 'Sign-In to Litmos',
+        'page callback' => 'drupal_get_form',
+        'page arguments' => array('litmos_sso_form'),
+        'access arguments' => array('access content'),
+        'type' => MENU_CALLBACK
+    );
+    $items['litmos/course/%'] = array(
+        'page callback' => 'litmos_course_login',
+        'page arguments' => array(2),
+        'access arguments' => array('access content'),
+        'type' => MENU_CALLBACK
+    );
+    return $items;
+}
+
+function litmos_form_alter(&$form, $form_state, $form_id) {
+    if($form_id == 'user_profile_form') {
+        $litmos_user = litmos_get_user();
+        $form['litmos'] = array(
+            '#type' => 'fieldset',
+            '#title' => 'Litmos',
+            '#weight' => 2,
+            '#tree' => true
+        );
+        $form['litmos']['username'] = array(
+            '#type' => 'textfield',
+            '#title' => 'Litmos login email address',
+            '#default_value' => isset($litmos_user['litmos_email']) ? $litmos_user['litmos_email'] : null
+        );
+        $form['#submit'][] = 'litmos_user_profile_form_submit';
+    }
+}
+
+function litmos_user_profile_form_submit($form, $form_state) {
+    global $user;
+    $litmos_user = litmos_get_user();
+    if(isset($form_state['values']['litmos']['username'])) {
+        $litmos_username = trim($form_state['values']['litmos']['username']);
+        try {
+            if (isset($litmos_user['litmos_email']) && !empty($litmos_username)) {
+                db_update('litmos_user')->fields(array(
+                    'litmos_email' => $litmos_username
+                ))->condition('uid', $user->uid)->execute();
+            } else if (!empty($litmos_username)) {
+                db_insert('litmos_user')->fields(array(
+                    'uid' => $user->uid,
+                    'litmos_email' => $form_state['values']['litmos']['username'],
+                ))->execute();
+            } else {
+                db_delete('litmos_user')->condition('uid', $user->uid)->execute();
+            }
+        }
+        catch (Exception $e) {
+            drupal_set_message('Unable to set Litmos user email','error');
+        }
+    }
+}
+
+function litmos_get_user() {
+    global $user;
+    $result = db_select('litmos_user', 'u')
+        ->fields('u')
+        ->condition('uid',$user->uid)
+        ->execute()
+        ->fetchAssoc();
+    return $result;
+}
+
+function litmos_cron() {
+    $type = 'litmos_course';
+    $courses = node_load_multiple(array(), array('type' => $type));
+    $response = litmos_api_request('/courses');    
+    if(is_object($response) && $response->code == 200 && is_string($response->data)) {
+        $response_data = simplexml_load_string($response->data);
+        foreach ($response_data->Course as $course) {
+            $existing_course = litmos_course_exist($course->OriginalId, $courses);
+            litmos_create_course($course, $existing_course);
+        }
+    }
+}
+
+function litmos_course_exist($originalId, $courses = null) {
+    if(!isset($courses)) {
+        $type = 'litmos_course';
+        $courses = node_load_multiple(array(), array('type' => $type));
+    }
+    foreach($courses as $course) {
+        if($course->field_litmos_original_id[$course->language][0]['value'] == $originalId) {
+            return $course;
+        }
+    }
+    return false;
+}
+
+function litmos_create_course($course_xml, $node = false) {
+    //TODO: Date always updated / allow author to be chosen
+    $type = 'litmos_course';
+    if(!$node) {
+        $uid = variable_get('litmos_admin');
+        $node = new stdClass();
+        $node->type = $type;
+        node_object_prepare($node);
+        $node->language = LANGUAGE_NONE;
+        $node->uid = $uid;
+        $node->status = 1;
+        $node->promote = 0;
+    }
+
+    $node->title = $course_xml->Name;
+    $body = $course_xml->Description;
+    $node->body[$node->language][0]['value'] = $body;
+    $node->body[$node->language][0]['summary'] = text_summary($body);
+    $node->body[$node->language][0]['format'] = 'filtered_html';
+    $node->field_litmos_id[$node->language][0]['value'] = $course_xml->Id;
+    $node->field_litmos_original_id[$node->language][0]['value'] = $course_xml->OriginalId;
+    $node->field_litmos_code[$node->language][0]['value'] = $course_xml->Code;
+    $node->field_litmos_active[$node->language][0]['value'] = $course_xml->Active == 'true' ? 1 : 0;
+    $node->field_litmos_for_sale[$node->language][0]['value'] = $course_xml->ForSale == 'true' ? 1 : 0;
+    $node->field_litmos_price[$node->language][0]['value'] = number_format((float)$course_xml->Price,2);
+    $node->field_litmos_ecom_short_desc[$node->language][0]['value'] = $course_xml->EcommerceShortDescription;
+    $node->field_litmos_ecom_long_desc[$node->language][0]['value'] = $course_xml->EcommerceLongDescription;
+    $node->field_litmos_ecom_long_desc[$node->language][0]['format'] = 'full_html';
+    $node->field_litmos_single_sign_on_link[$node->language][0]['value'] = url('litmos/course/' . $course_xml->OriginalId);
+    $node = node_submit($node);
+    node_save($node);
+}
+
+function litmos_admin_form($form, &$form_state) {
+    global $user;
+    $litmos_source = litmos_get_source();
+    $litmos_api_key = litmos_get_api_key();
+    $form['litmos_admin'] = array(
+        '#type' => 'hidden',
+        '#value' => $user->uid
+    );
+    $form['litmos_source'] = array(
+        '#title' => 'Source',
+        '#type' => 'textfield',
+        '#description' => 'Free text description of your app. Usually a company or product name.',
+        '#required' => true,
+        '#default_value' => $litmos_source,
+    );
+	$form['litmos_api_key'] = array(
+        '#title' => 'Litmos API Key',
+        '#type' => 'textfield',
+        '#required' => 1,
+        '#default_value' => $litmos_api_key,
+    );
+    return system_settings_form($form,true);
+}
+
+function litmos_get_api_key() {
+    return variable_get('litmos_api_key');
+}
+
+function litmos_get_source() {
+    return variable_get('litmos_source');
+}
+
+function litmos_api_request($uri, $query = '') {
+    $litmos_source = litmos_get_source();
+    $litmos_api_key = litmos_get_api_key();
+    $uri = LITMOS_BASE_URI . $uri . '?apikey=' . $litmos_api_key . '&source=' . urlencode($litmos_source);
+    if(!empty($query)) {
+        $uri .= '&' . $query;
+    }
+    return drupal_http_request($uri);
+}
+
+function litmos_course_login($courseId) {
+    $litmos_user = litmos_get_user();
+    if(isset($litmos_user['litmos_email'])) {
+        $litmos_email = $litmos_user['litmos_email'];
+        $litmos_user_search_response = litmos_api_request('/users','search=' . $litmos_email);
+        if(isset($litmos_user_search_response->data)) {
+            $litmos_user_search_response = simplexml_load_string($litmos_user_search_response->data);
+            $litmos_user_id = (string)$litmos_user_search_response->User->Id;
+            $litmos_user_response = litmos_api_request('/users/' . $litmos_user_id);
+            if(isset($litmos_user_response->data)) {
+                $litmos_user_response = simplexml_load_string($litmos_user_response->data);
+                $litmos_login = $litmos_user_response->LoginKey . '&c=' . $courseId;
+                header('Location: ' .  $litmos_login);
+                exit;
+            }
+        }
+    }
+    else {
+        drupal_set_message('Please enter your Litmos login email address in account settings and try again.','error');
+        drupal_goto('user');
+    }
+}
